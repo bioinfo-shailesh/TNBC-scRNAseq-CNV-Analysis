@@ -32,7 +32,7 @@ RERUN_ANEUPLOID <- FALSE
 FZD_THRESHOLD <- 1
 IL10_THRESHOLD <- 0
 
-pkgs <- c("Seurat","Matrix","dplyr","tidyr","ggplot2","patchwork","SoupX","copykat")
+pkgs <- c("Seurat","Matrix","dplyr","tidyr","ggplot2","patchwork","SoupX","copykat","harmony")
 for(p in pkgs) if(!requireNamespace(p, quietly=TRUE)) stop("Missing package: ",p)
 suppressPackageStartupMessages({library(Seurat);library(Matrix);library(dplyr);library(tidyr);library(ggplot2);library(patchwork);library(SoupX);library(copykat)})
 setwd(PROJECT_DIR)
@@ -429,16 +429,71 @@ if (RERUN_COPYKAT) {
 }
 
 # ---------------------------------------------------------------------------
+# LOAD QC-FILTERED OBJECTS AND SEURAT PREPROCESSING
+# normalization -> variable features -> scaling -> PCA
+# ---------------------------------------------------------------------------
+
+seurat.list <- lapply(
+  sample_info$Sample_ID,
+  function(sid) {
+
+    qc_file <- file.path(
+      PROJECT_DIR,
+      "data",
+      "02_QC_Filtered",
+      paste0(sid, "_QC.rds")
+    )
+
+    if (!file.exists(qc_file)) {
+      stop("QC-filtered object not found: ", qc_file)
+    }
+
+    readRDS(qc_file)
+  }
+)
+
+names(seurat.list) <- sample_info$Sample_ID
+
+# ---------------------------------------------------------------------------
+# Normalize, identify variable genes, scale, and run PCA
+# ---------------------------------------------------------------------------
+
+seurat.list <- lapply(
+  seurat.list,
+  function(x) {
+
+    x <- NormalizeData(
+      x,
+      normalization.method = "LogNormalize",
+      scale.factor = 10000
+    )
+
+    x <- FindVariableFeatures(
+      x,
+      selection.method = "vst",
+      nfeatures = 2000
+    )
+
+    x <- ScaleData(x)
+
+    x <- RunPCA(
+      x,
+      features = VariableFeatures(x),
+      npcs = 50
+    )
+
+    x
+  }
+)
+# ---------------------------------------------------------------------------
 # LOAD FINAL VALIDATED ANNOTATED SEURAT OBJECT
 # ---------------------------------------------------------------------------
-# The final annotated Seurat object is a local analysis input and is not
-# distributed in this public repository.
+# This object was generated during the study from the QC-filtered samples
+# and CopyKAT results. It is not distributed in this public repository
+# because it contains patient-level single-cell data.
 #
-# Before running this section, place the locally generated annotated object at:
+# Expected local file:
 #   data/combined_CopyKAT_CellType_annotated.rds
-#
-# The object should contain the CopyKAT CNV classification and the integrated
-# Seurat metadata required for downstream analyses.
 # ---------------------------------------------------------------------------
 
 ANNOTATED_OBJECT <- file.path(
@@ -449,8 +504,8 @@ ANNOTATED_OBJECT <- file.path(
 
 if (!file.exists(ANNOTATED_OBJECT)) {
   stop(
-    "Final annotated Seurat object not found. ",
-    "Please provide the local file: ",
+    "Final annotated Seurat object not found.\n",
+    "Expected local file: ",
     ANNOTATED_OBJECT
   )
 }
@@ -458,6 +513,15 @@ if (!file.exists(ANNOTATED_OBJECT)) {
 combined <- readRDS(ANNOTATED_OBJECT)
 
 DefaultAssay(combined) <- "RNA"
+
+cat(
+  "Loaded final annotated Seurat object: ",
+  ncol(combined),
+  " cells and ",
+  nrow(combined),
+  " genes.\n",
+  sep = ""
+)
 
 # ---------------------------------------------------------------------------
 # VALIDATED CELL-TYPE ANNOTATION
@@ -1367,10 +1431,79 @@ saveRDS(NK,file.path(nk_obj,"NK_Final.rds"))
 # Response-wise Wilcoxon + BH for WNT targets and SOCS3
 # ---------------------------------------------------------------------------
 wilcox_resp<-function(o,genes,pop){genes<-genes[genes%in%rownames(o)];bind_rows(lapply(genes,function(g){x<-FetchData(o,vars=c(g,"Response"));x<-x[x$Response%in%c("NR","R"),,drop=FALSE];if(length(unique(x$Response))<2)return(data.frame(Population=pop,Gene=g,NR_n=sum(x$Response=="NR"),R_n=sum(x$Response=="R"),P_value=NA_real_));w<-wilcox.test(x[[g]]~x$Response,exact=FALSE);data.frame(Population=pop,Gene=g,NR_n=sum(x$Response=="NR"),R_n=sum(x$Response=="R"),NR_median=median(x[[g]][x$Response=="NR"]),R_median=median(x[[g]][x$Response=="R"]),P_value=w$p.value)}))%>%mutate(FDR_BH=p.adjust(P_value,"BH"))}
-write.csv(wilcox_resp(tumor,wp,"Total Tumor"),file.path(PROJECT_DIR,"output/Final_Analysis/Statistics/WNT_Targets_Tumor_NR_vs_R_Wilcoxon_BH.csv"),row.names=FALSE);if("SOCS3"%in%rownames(tumor))write.csv(wilcox_resp(tumor,"SOCS3","Total Tumor"),file.path(PROJECT_DIR,"output/Final_Analysis/Statistics/SOCS3_Tumor_NR_vs_R_Wilcoxon_BH.csv"),row.names=FALSE)
+write.csv(wilcox_resp(tumor,wnt_present,"Total Tumor"),file.path(PROJECT_DIR,"output/Final_Analysis/Statistics/WNT_Targets_Tumor_NR_vs_R_Wilcoxon_BH.csv"),row.names=FALSE);if("SOCS3"%in%rownames(tumor))write.csv(wilcox_resp(tumor,"SOCS3","Total Tumor"),file.path(PROJECT_DIR,"output/Final_Analysis/Statistics/SOCS3_Tumor_NR_vs_R_Wilcoxon_BH.csv"),row.names=FALSE)
 
-saveRDS(combined,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/Final_Combined_Annotated_Seurat.rds"))
-sink(file.path(PROJECT_DIR,"output/Final_Analysis/SessionInfo.txt"));cat("Final analysis session\n\n");print(sessionInfo());sink()
-write.csv(data.frame(Metric=c("Total combined cells","Aneuploid cells","Refined tumor cells"),Value=c(ncol(combined),sum(combined$CNV_status=="aneuploid",na.rm=TRUE),ncol(tumor))),file.path(PROJECT_DIR,"output/Final_Analysis/Tables/Final_Cell_Count_Report.csv"),row.names=FALSE)
-cat("\nFINAL PIPELINE COMPLETED\nOutput: ",file.path(PROJECT_DIR,"output/Final_Analysis"),"\n")
+# ---------------------------------------------------------------------------
+# FINAL ANALYSIS OUTPUTS
+# ---------------------------------------------------------------------------
+
+# Summary cell-count report
+final_cell_counts <- data.frame(
+  Metric = c(
+    "Total combined cells",
+    "Aneuploid cells",
+    "Refined tumor cells"
+  ),
+  Value = c(
+    ncol(combined),
+    sum(
+      combined$CNV_status == "aneuploid",
+      na.rm = TRUE
+    ),
+    ncol(tumor)
+  )
+)
+
+write.csv(
+  final_cell_counts,
+  file.path(
+    PROJECT_DIR,
+    "output",
+    "Final_Analysis",
+    "Tables",
+    "Final_Cell_Count_Report.csv"
+  ),
+  row.names = FALSE
+)
+
+# Save final annotated object locally
+# This file contains patient-level single-cell data and should NOT be
+# committed to the public GitHub repository.
+saveRDS(
+  combined,
+  file.path(
+    PROJECT_DIR,
+    "output",
+    "Final_Analysis",
+    "Objects",
+    "Final_Combined_Annotated_Seurat.rds"
+  )
+)
+
+# Record software environment for reproducibility
+sink(
+  file.path(
+    PROJECT_DIR,
+    "output",
+    "Final_Analysis",
+    "SessionInfo.txt"
+  )
+)
+
+cat("Final analysis session\n\n")
+print(sessionInfo())
+
+sink()
+
+cat(
+  "\nFINAL PIPELINE COMPLETED\n",
+  "Output directory: ",
+  file.path(
+    PROJECT_DIR,
+    "output",
+    "Final_Analysis"
+  ),
+  "\n",
+  sep = ""
+)
 
