@@ -129,26 +129,219 @@ if (RERUN_QC) {
   }
 }
 # ---------------------------------------------------------------------------
-# COPYKAT: SoupX-corrected QC objects -> CNV predictions
+# COPYKAT: SoupX-corrected QC-filtered objects -> CNV predictions
 # ---------------------------------------------------------------------------
-run_ck<-function(sid){
- q<-file.path(PROJECT_DIR,"data/02_QC_Filtered",paste0(sid,"_QC.rds"));od<-file.path(PROJECT_DIR,"data/03_CopyKAT",sid);dir.create(od,recursive=TRUE,showWarnings=FALSE);pf<-file.path(od,"copykat_prediction.txt");if(file.exists(pf)&&!RERUN_COPYKAT)return();o<-readRDS(q);m<-as(GetAssayData(o,assay="RNA",layer="counts"),"dgCMatrix")
- ck<-copykat(rawmat=m,id.type="S",cell.line="no",ngene.chr=5,min.gene.per.cell=200,LOW.DR=.05,UP.DR=.1,win.size=25,norm.cell.names="",KS.cut=.1,sam.name=sid,distance="euclidean",output.seg=FALSE,plot.genes=TRUE,genome="hg20",n.cores=1)
- saveRDS(ck,file.path(od,"copykat_result.rds"));write.table(ck$prediction,pf,sep="\t",quote=FALSE,row.names=FALSE);if(!is.null(ck$CNAmat))write.table(ck$CNAmat,file.path(od,"copykat_CNA_matrix.txt"),sep="\t",quote=FALSE)
+# CopyKAT was run independently for each sample using the
+# SoupX-corrected, QC-filtered expression matrix.
+#
+# Parameters used in the analysis:
+#   id.type       = "S"
+#   cell.line     = "no"
+#   ngene.chr     = 5
+#   LOW.DR        = 0.05
+#   UP.DR         = 0.10
+#   win.size      = 25
+#   KS.cut        = 0.10
+#   distance      = "euclidean"
+#   output.seg    = FALSE
+#   plot.genes    = TRUE
+#   genome        = "hg20"
+#   n.cores       = 1
+# ---------------------------------------------------------------------------
+
+run_ck <- function(sid) {
+
+  q <- file.path(
+    PROJECT_DIR,
+    "data/02_QC_Filtered",
+    paste0(sid, "_QC.rds")
+  )
+
+  od <- file.path(
+    PROJECT_DIR,
+    "data/03_CopyKAT",
+    sid
+  )
+
+  dir.create(
+    od,
+    recursive = TRUE,
+    showWarnings = FALSE
+  )
+
+  prediction_file <- file.path(
+    od,
+    "copykat_prediction.txt"
+  )
+
+  if (file.exists(prediction_file) && !RERUN_COPYKAT) {
+    return()
+  }
+
+  o <- readRDS(q)
+
+  counts <- as(
+    GetAssayData(
+      o,
+      assay = "RNA",
+      layer = "counts"
+    ),
+    "dgCMatrix"
+  )
+
+  ck <- copykat(
+    rawmat = counts,
+    id.type = "S",
+    cell.line = "no",
+    ngene.chr = 5,
+    LOW.DR = 0.05,
+    UP.DR = 0.10,
+    win.size = 25,
+    norm.cell.names = "",
+    KS.cut = 0.10,
+    sam.name = sid,
+    distance = "euclidean",
+    output.seg = FALSE,
+    plot.genes = TRUE,
+    genome = "hg20",
+    n.cores = 1
+  )
+
+  saveRDS(
+    ck,
+    file.path(
+      od,
+      "copykat_result.rds"
+    )
+  )
+
+  write.table(
+    ck$prediction,
+    prediction_file,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+  )
+
+  if (!is.null(ck$CNAmat)) {
+
+    write.table(
+      ck$CNAmat,
+      file.path(
+        od,
+        "copykat_CNA_matrix.txt"
+      ),
+      sep = "\t",
+      quote = FALSE
+    )
+  }
 }
-if(RERUN_COPYKAT)for(sid in sample_info$Sample_ID)run_ck(sid)
+
+if (RERUN_COPYKAT) {
+  for (sid in sample_info$Sample_ID) {
+    run_ck(sid)
+  }
+}
 
 # ---------------------------------------------------------------------------
-# LOAD FINAL VALIDATED ANNOTATED OBJECT
+# LOAD FINAL VALIDATED ANNOTATED SEURAT OBJECT
 # ---------------------------------------------------------------------------
-candidates<-c(file.path(PROJECT_DIR,"data/combined_CopyKAT_CellType_annotated.rds"),file.path(PROJECT_DIR,"data/combined_CopyKAT_annotated.rds"),file.path(NK_PROJECT_DIR,"Seurat_objects/combined_annotated.rds"));ff<-candidates[file.exists(candidates)][1];if(is.na(ff))stop("Final annotated Seurat object not found.")
-combined<-readRDS(ff);DefaultAssay(combined)<-"RNA"
+# The final annotated Seurat object is a local analysis input and is not
+# distributed in this public repository.
+#
+# Before running this section, place the locally generated annotated object at:
+#   data/combined_CopyKAT_CellType_annotated.rds
+#
+# The object should contain the CopyKAT CNV classification and the integrated
+# Seurat metadata required for downstream analyses.
+# ---------------------------------------------------------------------------
 
-# Existing validated cluster mapping from project
-if(RERUN_ANNOTATION){ann<-c("0"="T cells","1"="T cells","2"="Tumor/Epithelial","3"="Tumor/Epithelial","4"="Myeloid","5"="Fibroblast","6"="NK cells","7"="Tumor/Epithelial","8"="Tumor/Epithelial","9"="T cells","10"="Tumor/Epithelial","11"="Tumor/Epithelial","12"="B cells","13"="T cells","14"="Undefined","15"="Pericyte/Endothelial","16"="B cells","17"="Undefined","18"="Myeloid");combined$Cell_Population<-unname(ann[as.character(combined$seurat_clusters)]);combined$Cell_Population[is.na(combined$Cell_Population)]<-"Undefined";saveRDS(combined,file.path(PROJECT_DIR,"data/combined_CopyKAT_CellType_annotated.rds"))}
+ANNOTATED_OBJECT <- file.path(
+  PROJECT_DIR,
+  "data",
+  "combined_CopyKAT_CellType_annotated.rds"
+)
 
-write.csv(as.data.frame(table(Population=combined$Cell_Population)),file.path(PROJECT_DIR,"output/Final_Analysis/Tables/Population_Cell_Counts.csv"),row.names=FALSE)
+if (!file.exists(ANNOTATED_OBJECT)) {
+  stop(
+    "Final annotated Seurat object not found. ",
+    "Please provide the local file: ",
+    ANNOTATED_OBJECT
+  )
+}
 
+combined <- readRDS(ANNOTATED_OBJECT)
+
+DefaultAssay(combined) <- "RNA"
+
+# ---------------------------------------------------------------------------
+# VALIDATED CELL-TYPE ANNOTATION
+# ---------------------------------------------------------------------------
+# Cluster annotations established during the study:
+#
+# Tumor/Epithelial      : clusters 2, 3, 7, 8, 10, 11
+# T cells               : clusters 0, 1, 9, 13
+# NK cells              : cluster 6
+# Fibroblast            : cluster 5
+# Myeloid               : clusters 4, 18
+# B cells               : clusters 12, 16
+# Pericyte/Endothelial  : cluster 15
+# Undefined             : clusters 14, 17
+#
+# These annotations were based on canonical cell-type marker expression
+# and subsequent manual review.
+
+if (RERUN_ANNOTATION) {
+
+  annotation_map <- c(
+    "0"  = "T cells",
+    "1"  = "T cells",
+    "2"  = "Tumor/Epithelial",
+    "3"  = "Tumor/Epithelial",
+    "4"  = "Myeloid",
+    "5"  = "Fibroblast",
+    "6"  = "NK cells",
+    "7"  = "Tumor/Epithelial",
+    "8"  = "Tumor/Epithelial",
+    "9"  = "T cells",
+    "10" = "Tumor/Epithelial",
+    "11" = "Tumor/Epithelial",
+    "12" = "B cells",
+    "13" = "T cells",
+    "14" = "Undefined",
+    "15" = "Pericyte/Endothelial",
+    "16" = "B cells",
+    "17" = "Undefined",
+    "18" = "Myeloid"
+  )
+
+  combined$Cell_Population <- unname(
+    annotation_map[as.character(combined$seurat_clusters)]
+  )
+
+  combined$Cell_Population[
+    is.na(combined$Cell_Population)
+  ] <- "Undefined"
+
+  saveRDS(
+    combined,
+    ANNOTATED_OBJECT
+  )
+}
+
+# Report the number of cells in each annotated population
+population_counts <- as.data.frame(
+  table(Population = combined$Cell_Population)
+)
+
+write.csv(
+  population_counts,
+  file.path(
+    PROJECT_DIR,
+    "output/Final_Analysis/Tables/Population_Cell_Counts.csv"
+  ),
+  row.names = FALSE
+)
 # ---------------------------------------------------------------------------
 # REFINED ANEUPLOID TUMOR: CopyKAT aneuploid + PTPRC <=0 + SPARC <1
 # ---------------------------------------------------------------------------
