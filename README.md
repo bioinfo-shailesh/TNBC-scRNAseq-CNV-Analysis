@@ -10,19 +10,19 @@ single-cell RNA-seq data from TNBC samples.
 
 The workflow includes:
 
-Raw 10X Genomics data processing
-Ambient RNA correction using SoupX
-Initial and sample-specific quality control
-Seurat normalization and dimensionality reduction
-CopyKAT-based CNV inference
-Cell-type annotation
-Refinement of the aneuploid tumor-cell population
-CSC and FZD7 classification
-WNT-associated gene expression analysis
-SOCS3 expression analysis
-NK-cell identification, refinement, and reclustering
-Response-wise statistical analysis using Wilcoxon rank-sum tests
-Multiple-testing correction using the Benjamini-Hochberg method
+1. Raw 10X Genomics data processing
+2. Ambient RNA correction using SoupX
+3. Initial and sample-specific quality control
+4. Seurat normalization and dimensionality reduction
+5. CopyKAT-based CNV inference
+6. Cell-type annotation
+7. Refinement of the aneuploid tumor-cell population
+8. CSC and FZD7 classification
+9. WNT-associated gene expression analysis
+10. SOCS3 expression analysis
+11. NK-cell identification, refinement, and reclustering
+12. Response-wise statistical analysis using Wilcoxon rank-sum tests
+13. Multiple-testing correction using the Benjamini-Hochberg method
 
 ## Repository structure
 
