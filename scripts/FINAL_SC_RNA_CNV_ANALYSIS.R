@@ -49,19 +49,204 @@ get_expr <- function(o,g){if(!g%in%rownames(o)) stop("Gene not found: ",g);as.nu
 # ---------------------------------------------------------------------------
 # SOUPX: raw 10X -> preliminary clustering -> ambient RNA correction
 # ---------------------------------------------------------------------------
-run_soupx <- function(sid,resp){
- out <- file.path(PROJECT_DIR,"data/01_SoupX",paste0(sid,"_SoupX.rds"))
- if(file.exists(out)&&!RERUN_SOUPX)return()
- rawdir<-file.path(RAW_DATA_DIR,sid); if(!dir.exists(rawdir))stop("Raw directory missing: ",rawdir)
- raw<-Read10X(rawdir); s<-CreateSeuratObject(raw,project=sid)
- s[["percent.mt"]]<-PercentageFeatureSet(s,pattern="^MT-")
- s<-NormalizeData(s);s<-FindVariableFeatures(s);s<-ScaleData(s);s<-RunPCA(s);s<-FindNeighbors(s,dims=1:20);s<-FindClusters(s,resolution=.5)
- tod<-raw;toc<-GetAssayData(s,layer="counts");g<-intersect(rownames(tod),rownames(toc));tod<-tod[g,,drop=FALSE];toc<-toc[g,,drop=FALSE];tod<-tod[order(rownames(tod)),,drop=FALSE];toc<-toc[order(rownames(toc)),,drop=FALSE]
- sc<-SoupChannel(tod,toc);sc<-setClusters(sc,setNames(as.character(s$seurat_clusters),colnames(s)));sc<-autoEstCont(sc);rho<-round(sc$fit$rhoEst*100,2);corr<-adjustCounts(sc)
- ss<-CreateSeuratObject(corr,project=sid);ss$Response<-resp;ss$Sample_ID<-sid
- saveRDS(sc,file.path(PROJECT_DIR,"data/01_SoupX",paste0(sid,"_SoupX_channel.rds")));saveRDS(ss,out);message(sid,": SoupX rho = ",rho,"%")
+
+run_soupx <- function(sid, resp) {
+
+  # Output file
+  out <- file.path(
+    PROJECT_DIR,
+    "data",
+    "01_SoupX",
+    paste0(sid, "_SoupX.rds")
+  )
+
+  # Skip if already generated unless rerun is requested
+  if (file.exists(out) && !RERUN_SOUPX) {
+    message(sid, ": existing SoupX object found; skipping.")
+    return(invisible(NULL))
+  }
+
+  # -------------------------------------------------------------------------
+  # Load raw 10X data
+  # -------------------------------------------------------------------------
+
+  rawdir <- file.path(
+    RAW_DATA_DIR,
+    sid
+  )
+
+  if (!dir.exists(rawdir)) {
+    stop(
+      "Raw directory missing: ",
+      rawdir
+    )
+  }
+
+  raw <- Read10X(rawdir)
+
+  # -------------------------------------------------------------------------
+  # Create preliminary Seurat object
+  # -------------------------------------------------------------------------
+
+  s <- CreateSeuratObject(
+    counts = raw,
+    project = sid
+  )
+
+  s[["percent.mt"]] <- PercentageFeatureSet(
+    s,
+    pattern = "^MT-"
+  )
+
+  # -------------------------------------------------------------------------
+  # Preliminary clustering for SoupX cluster assignment
+  # -------------------------------------------------------------------------
+
+  s <- NormalizeData(s)
+
+  s <- FindVariableFeatures(s)
+
+  s <- ScaleData(s)
+
+  s <- RunPCA(s)
+
+  s <- FindNeighbors(
+    s,
+    dims = 1:20
+  )
+
+  s <- FindClusters(
+    s,
+    resolution = 0.5
+  )
+
+  # -------------------------------------------------------------------------
+  # Prepare SoupX matrices
+  # -------------------------------------------------------------------------
+
+  tod <- raw
+
+  toc <- GetAssayData(
+    s,
+    layer = "counts"
+  )
+
+  common_genes <- intersect(
+    rownames(tod),
+    rownames(toc)
+  )
+
+  tod <- tod[
+    common_genes,
+    ,
+    drop = FALSE
+  ]
+
+  toc <- toc[
+    common_genes,
+    ,
+    drop = FALSE
+  ]
+
+  # Ensure identical gene order
+  tod <- tod[
+    order(rownames(tod)),
+    ,
+    drop = FALSE
+  ]
+
+  toc <- toc[
+    order(rownames(toc)),
+    ,
+    drop = FALSE
+  ]
+
+  # -------------------------------------------------------------------------
+  # Create SoupX channel and assign preliminary clusters
+  # -------------------------------------------------------------------------
+
+  sc <- SoupChannel(
+    tod = tod,
+    toc = toc
+  )
+
+  sc <- setClusters(
+    sc,
+    setNames(
+      as.character(s$seurat_clusters),
+      colnames(s)
+    )
+  )
+
+  # -------------------------------------------------------------------------
+  # Estimate ambient RNA contamination
+  # -------------------------------------------------------------------------
+
+  sc <- autoEstCont(sc)
+
+  rho <- round(
+    sc$fit$rhoEst * 100,
+    2
+  )
+
+  # -------------------------------------------------------------------------
+  # Correct ambient RNA contamination
+  # -------------------------------------------------------------------------
+
+  corrected_counts <- adjustCounts(sc)
+
+  # -------------------------------------------------------------------------
+  # Create corrected Seurat object
+  # -------------------------------------------------------------------------
+
+  ss <- CreateSeuratObject(
+    counts = corrected_counts,
+    project = sid
+  )
+
+  ss$Response <- resp
+  ss$Sample_ID <- sid
+
+  # -------------------------------------------------------------------------
+  # Save SoupX objects
+  # -------------------------------------------------------------------------
+
+  saveRDS(
+    sc,
+    file.path(
+      PROJECT_DIR,
+      "data",
+      "01_SoupX",
+      paste0(sid, "_SoupX_channel.rds")
+    )
+  )
+
+  saveRDS(
+    ss,
+    out
+  )
+
+  message(
+    sid,
+    ": SoupX rho = ",
+    rho,
+    "%"
+  )
+
+  invisible(ss)
 }
-if(RERUN_SOUPX) for(i in seq_len(nrow(sample_info))) run_soupx(sample_info$Sample_ID[i],sample_info$Response[i])
+
+# Run SoupX for all samples only when explicitly requested
+if (RERUN_SOUPX) {
+  for (i in seq_len(nrow(sample_info))) {
+
+    run_soupx(
+      sample_info$Sample_ID[i],
+      sample_info$Response[i]
+    )
+
+  }
+}
 
 # ---------------------------------------------------------------------------
 # FINAL QC: use existing validated QC objects unless explicitly rerun
@@ -343,46 +528,619 @@ write.csv(
   row.names = FALSE
 )
 # ---------------------------------------------------------------------------
-# REFINED ANEUPLOID TUMOR: CopyKAT aneuploid + PTPRC <=0 + SPARC <1
+# REFINED ANEUPLOID TUMOR
+# CopyKAT aneuploid cells followed by removal of immune and
+# fibroblast-associated contamination.
+#
+# Exclusion criteria:
+#   PTPRC > 0  -> excluded
+#   SPARC >= 1 -> excluded
+#
+# Final refined tumor population: 5,378 cells
 # ---------------------------------------------------------------------------
-tumor<-subset(combined,subset=CNV_status=="aneuploid")
-if("PTPRC"%in%rownames(tumor))tumor<-tumor[,get_expr(tumor,"PTPRC")<=0]
-if("SPARC"%in%rownames(tumor))tumor<-tumor[,get_expr(tumor,"SPARC")<1]
-tumor$Tumor_Refined<-"Tumor";saveRDS(tumor,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/Final_Refined_Tumor.rds"))
 
-# ---------------------------------------------------------------------------
-# CSC / FZD7 annotations
-# CSC definition in project: CD44+ CD24-. FZD7+ threshold used in plots: >=1.
-# ---------------------------------------------------------------------------
-if(all(c("CD44","CD24")%in%rownames(tumor))){a<-get_expr(tumor,"CD44");b<-get_expr(tumor,"CD24");tumor$CSC_All<-ifelse(a>0&b<=0,"CSC","Non-CSC")}else if(!"CSC_All"%in%colnames(tumor@meta.data))tumor$CSC_All<-NA_character_
-if("FZD7"%in%rownames(tumor)){f<-get_expr(tumor,"FZD7");tumor$FZD7_Status<-ifelse(f>=1,"FZD7+","FZD7-");tumor$FZD7_CSC_Group<-ifelse(f>=1&tumor$CSC_All=="CSC","FZD7+ CSC+",ifelse(f>=1&tumor$CSC_All!="CSC","FZD7+ CSC-","FZD7-"))}
-if(all(c("CSC_All","FZD7_Status")%in%colnames(tumor@meta.data)))write.csv(tumor@meta.data%>%count(Response,CSC_All,FZD7_Status,FZD7_CSC_Group,name="Cell_Count"),file.path(PROJECT_DIR,"output/Final_Analysis/Tables/CSC_FZD7_Cell_Counts.csv"),row.names=FALSE)
+tumor <- subset(
+  combined,
+  subset = CNV_status == "aneuploid"
+)
 
-# ---------------------------------------------------------------------------
-# WNT targets used in the project
-# ---------------------------------------------------------------------------
-wnt<-c("PROM1","PROM2","ALDH1A1","ALDH1A3","SOX9","CCND1","LEF1","TCF7","AXIN2");wp<-wnt[wnt%in%rownames(tumor)];write.csv(data.frame(Gene=wnt,Present=wnt%in%rownames(tumor)),file.path(PROJECT_DIR,"output/Final_Analysis/Tables/WNT_Target_Gene_Availability.csv"),row.names=FALSE)
-
-make_plots<-function(o,genes,grp,name){genes<-genes[genes%in%rownames(o)];if(!length(genes))return();dp<-DotPlot(o,features=genes,group.by=grp,dot.scale=8)+scale_color_gradient(low="#2166AC",high="#B2182B")+labs(color="Average Expression",size="Percent Expressed",x="Gene",y=NULL,title=name)+theme_classic(base_size=13)+theme(axis.text.x=element_text(angle=45,hjust=1,face="italic"),axis.text.y=element_text(face="bold"),plot.title=element_text(face="bold",hjust=.5));vp<-VlnPlot(o,features=genes,group.by=grp,pt.size=.05,ncol=1)&theme_classic(base_size=12)&theme(axis.text.x=element_text(face="bold"),legend.position="right");save_plot(dp,file.path(PROJECT_DIR,"output/Final_Analysis/Figures",paste0(name,"_DotPlot.png")),12,8);save_plot(vp,file.path(PROJECT_DIR,"output/Final_Analysis/Figures",paste0(name,"_ViolinPlot.png")),12,14)}
-if("CSC_All"%in%colnames(tumor@meta.data))make_plots(tumor,wp,"CSC_All","WNT_Targets_CSC_vs_NonCSC")
-tumor$Response<-factor(tumor$Response,levels=c("NR","R"));make_plots(tumor,wp,"Response","WNT_Targets_Total_Tumor_NR_vs_R")
-if("FZD7_Status"%in%colnames(tumor@meta.data)){fp<-subset(tumor,subset=FZD7_Status=="FZD7+");if(ncol(fp)>0)make_plots(fp,wp,"Response","WNT_Targets_FZD7_Positive_NR_vs_R")}
-
-# ---------------------------------------------------------------------------
-# SOCS3: tumor, populations and patient-wise
-# ---------------------------------------------------------------------------
-if("SOCS3"%in%rownames(combined)){
- if("Response"%in%colnames(tumor@meta.data)){p<-VlnPlot(tumor,features="SOCS3",group.by="Response",pt.size=.05)+theme_classic(base_size=14)+labs(x=NULL,y="Normalized Expression",title="SOCS3 in Tumor: NR vs R");save_plot(p,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_Tumor_NR_vs_R_Violin.png"),8,7);d<-DotPlot(tumor,features="SOCS3",group.by="Response",dot.scale=8)+scale_color_gradient(low="#2166AC",high="#B2182B")+theme_classic(base_size=14)+labs(x=NULL,y=NULL,color="Average Expression",size="Percent Expressed",title="SOCS3 in Tumor: NR vs R");save_plot(d,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_Tumor_NR_vs_R_DotPlot.png"),7,6)}
- pops<-subset(combined,subset=Cell_Population%in%c("Tumor/Epithelial","Myeloid","NK cells","B cells","Fibroblast","T cells"));p<-VlnPlot(pops,features="SOCS3",group.by="Cell_Population",pt.size=.03)+theme_classic(base_size=13)+theme(axis.text.x=element_text(angle=45,hjust=1))+labs(x=NULL,y="Normalized Expression",title="SOCS3 Across Cell Populations");save_plot(p,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_All_Cell_Populations_Violin.png"),12,8);d<-DotPlot(pops,features="SOCS3",group.by="Cell_Population",dot.scale=8)+scale_color_gradient(low="#2166AC",high="#B2182B")+theme_classic(base_size=13)+labs(x=NULL,y=NULL,color="Average Expression",size="Percent Expressed",title="SOCS3 Across Cell Populations");save_plot(d,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_All_Cell_Populations_DotPlot.png"),10,7)
- if("Sample_ID"%in%colnames(tumor@meta.data)){ps<-FetchData(tumor,vars=c("SOCS3","Sample_ID","Response"))%>%group_by(Sample_ID,Response)%>%summarise(N_Cells=n(),Mean_SOCS3=mean(SOCS3),Median_SOCS3=median(SOCS3),Percent_GE1=mean(SOCS3>=1)*100,Percent_GT0=mean(SOCS3>0)*100,.groups="drop");write.csv(ps,file.path(PROJECT_DIR,"output/Final_Analysis/Tables/SOCS3_Tumor_Patient_Wise.csv"),row.names=FALSE);p<-ggplot(ps,aes(Sample_ID,Mean_SOCS3,fill=Response))+geom_col()+theme_classic(base_size=13)+theme(axis.text.x=element_text(angle=45,hjust=1))+labs(x="Patient",y="Mean SOCS3 Expression",title="Patient-wise SOCS3 Expression in Tumor");save_plot(p,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_Tumor_Patient_Wise_BarPlot.png"),12,7)}
+# Remove PTPRC-positive immune cells
+if ("PTPRC" %in% rownames(tumor)) {
+  tumor <- tumor[
+    ,
+    get_expr(tumor, "PTPRC") < 1
+  ]
 }
 
+# Remove SPARC-high stromal/fibroblast contamination
+if ("SPARC" %in% rownames(tumor)) {
+  tumor <- tumor[
+    ,
+    get_expr(tumor, "SPARC") < 1
+  ]
+}
+
+tumor$Tumor_Refined <- "Tumor"
+
+saveRDS(
+  tumor,
+  file.path(
+    PROJECT_DIR,
+    "output/Final_Analysis/Objects/Final_Refined_Tumor.rds"
+  )
+)
+
+cat(
+  "Final refined tumor cells: ",
+  ncol(tumor),
+  "\n",
+  sep = ""
+)
 # ---------------------------------------------------------------------------
-# T and B cells
+# CSC / FZD7 ANNOTATION
 # ---------------------------------------------------------------------------
-tc<-subset(combined,subset=Cell_Population=="T cells");bc<-subset(combined,subset=Cell_Population=="B cells");dir.create(file.path(PROJECT_DIR,"output/Final_Analysis/Objects/T_Cells"),recursive=TRUE,showWarnings=FALSE);dir.create(file.path(PROJECT_DIR,"output/Final_Analysis/Objects/B_Cells"),recursive=TRUE,showWarnings=FALSE);saveRDS(tc,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/T_Cells/T_cells.rds"));saveRDS(bc,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/B_Cells/B_cells.rds"))
-if(all(c("CD4","CD8A","FOXP3")%in%rownames(tc))){a<-get_expr(tc,"CD4");b<-get_expr(tc,"CD8A");c<-get_expr(tc,"FOXP3");tc$T_Cell_Subtype<-ifelse(c>0,"FOXP3+",ifelse(b>0,"CD8",ifelse(a>0,"CD4","Other")));if("SOCS3"%in%rownames(tc)){p<-VlnPlot(tc,features="SOCS3",group.by="T_Cell_Subtype",pt.size=.05)+theme_classic(base_size=13)+labs(x=NULL,y="Normalized Expression",title="SOCS3 in T-cell Subtypes");save_plot(p,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_T_Cell_Subtypes_Violin.png"),10,7);d<-DotPlot(tc,features="SOCS3",group.by="T_Cell_Subtype",dot.scale=8)+scale_color_gradient(low="#2166AC",high="#B2182B")+theme_classic(base_size=13)+labs(x=NULL,y=NULL,color="Average Expression",size="Percent Expressed",title="SOCS3 in T-cell Subtypes");save_plot(d,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_T_Cell_Subtypes_DotPlot.png"),8,6)};saveRDS(tc,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/T_Cells/T_cells_annotated.rds"))}
-if("IL10"%in%rownames(bc)){bc$IL10_Status<-ifelse(get_expr(bc,"IL10")>IL10_THRESHOLD,"IL10+","IL10-");if("SOCS3"%in%rownames(bc)){p<-VlnPlot(bc,features="SOCS3",group.by="IL10_Status",pt.size=.08)+theme_classic(base_size=13)+labs(x=NULL,y="Normalized Expression",title="SOCS3 in IL10+ and IL10- B cells");save_plot(p,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_B_Cell_IL10_Status_Violin.png"),9,7);d<-DotPlot(bc,features="SOCS3",group.by="IL10_Status",dot.scale=8)+scale_color_gradient(low="#2166AC",high="#B2182B")+theme_classic(base_size=13)+labs(x=NULL,y=NULL,color="Average Expression",size="Percent Expressed",title="SOCS3 in IL10+ and IL10- B cells");save_plot(d,file.path(PROJECT_DIR,"output/Final_Analysis/Figures/SOCS3_B_Cell_IL10_Status_DotPlot.png"),8,6)};write.csv(as.data.frame(table(bc$IL10_Status,bc$Response)),file.path(PROJECT_DIR,"output/Final_Analysis/Tables/B_Cell_IL10_Response_Cell_Counts.csv"),row.names=FALSE);saveRDS(bc,file.path(PROJECT_DIR,"output/Final_Analysis/Objects/B_Cells/B_cells_IL10_annotated.rds"))}
+# CSC definition:
+#   CD44 > 0 AND CD24 <= 0
+#
+# FZD7-positive definition:
+#   FZD7 >= 1
+#
+# These annotations were performed on the refined aneuploid tumor
+# population after exclusion of PTPRC-positive and SPARC-high cells.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cancer stem cell (CSC) annotation
+# ---------------------------------------------------------------------------
+
+if (all(c("CD44", "CD24") %in% rownames(tumor))) {
+
+  CD44_expr <- get_expr(tumor, "CD44")
+  CD24_expr <- get_expr(tumor, "CD24")
+
+  tumor$CSC_All <- ifelse(
+    CD44_expr > 0 & CD24_expr <= 0,
+    "CSC",
+    "Non-CSC"
+  )
+
+} else {
+
+  warning("CD44 and/or CD24 not found in tumor object.")
+
+  if (!"CSC_All" %in% colnames(tumor@meta.data)) {
+    tumor$CSC_All <- NA_character_
+  }
+}
+
+
+# ---------------------------------------------------------------------------
+# FZD7 annotation
+# ---------------------------------------------------------------------------
+
+if ("FZD7" %in% rownames(tumor)) {
+
+  FZD7_expr <- get_expr(tumor, "FZD7")
+
+  tumor$FZD7_Status <- ifelse(
+    FZD7_expr >= 1,
+    "FZD7+",
+    "FZD7-"
+  )
+
+} else {
+
+  warning("FZD7 not found in tumor object.")
+}
+
+
+# ---------------------------------------------------------------------------
+# Combined FZD7 / CSC groups
+# ---------------------------------------------------------------------------
+
+if (all(c("CSC_All", "FZD7_Status") %in% colnames(tumor@meta.data))) {
+
+  tumor$FZD7_CSC_Group <- NA_character_
+
+  tumor$FZD7_CSC_Group[
+    tumor$FZD7_Status == "FZD7+" &
+    tumor$CSC_All == "CSC"
+  ] <- "FZD7+ CSC+"
+
+  tumor$FZD7_CSC_Group[
+    tumor$FZD7_Status == "FZD7+" &
+    tumor$CSC_All == "Non-CSC"
+  ] <- "FZD7+ CSC-"
+
+  tumor$FZD7_CSC_Group[
+    tumor$FZD7_Status == "FZD7-"
+  ] <- "FZD7-"
+}
+
+
+# ---------------------------------------------------------------------------
+# Cell counts
+# ---------------------------------------------------------------------------
+
+if (all(c("CSC_All", "FZD7_Status", "FZD7_CSC_Group") %
+        in% colnames(tumor@meta.data))) {
+
+  CSC_FZD7_counts <- tumor@meta.data %>%
+    count(
+      Response,
+      CSC_All,
+      FZD7_Status,
+      FZD7_CSC_Group,
+      name = "Cell_Count"
+    )
+
+  write.csv(
+    CSC_FZD7_counts,
+    file.path(
+      PROJECT_DIR,
+      "output/Final_Analysis/Tables",
+      "CSC_FZD7_Cell_Counts.csv"
+    ),
+    row.names = FALSE
+  )
+}
+
+
+# Save tumor object containing CSC/FZD7 annotations
+saveRDS(
+  tumor,
+  file.path(
+    PROJECT_DIR,
+    "output/Final_Analysis/Objects",
+    "Final_Refined_Tumor_CSC_FZD7.rds"
+  )
+)
+# ---------------------------------------------------------------------------
+# WNT TARGET GENE ANALYSIS
+# ---------------------------------------------------------------------------
+# WNT-associated genes analyzed in the refined tumor population:
+# PROM1, PROM2, ALDH1A1, ALDH1A3, SOX9, CCND1, LEF1, TCF7, AXIN2
+#
+# Analyses were performed after establishment of the refined aneuploid
+# tumor population and included:
+#   1. CSC vs Non-CSC
+#   2. NR vs R in the total tumor population
+#   3. NR vs R within FZD7-positive tumor cells
+# ---------------------------------------------------------------------------
+
+wnt <- c(
+  "PROM1",
+  "PROM2",
+  "ALDH1A1",
+  "ALDH1A3",
+  "SOX9",
+  "CCND1",
+  "LEF1",
+  "TCF7",
+  "AXIN2"
+)
+
+# Retain WNT genes present in the tumor expression matrix
+wnt_present <- wnt[wnt %in% rownames(tumor)]
+
+# Record gene availability
+wnt_availability <- data.frame(
+  Gene = wnt,
+  Present = wnt %in% rownames(tumor)
+)
+
+write.csv(
+  wnt_availability,
+  file.path(
+    PROJECT_DIR,
+    "output/Final_Analysis/Tables",
+    "WNT_Target_Gene_Availability.csv"
+  ),
+  row.names = FALSE
+)
+
+
+# ---------------------------------------------------------------------------
+# Plotting function for WNT target genes
+# ---------------------------------------------------------------------------
+
+make_wnt_plots <- function(
+    object,
+    genes,
+    group_variable,
+    analysis_name
+) {
+
+  genes <- genes[genes %in% rownames(object)]
+
+  if (length(genes) == 0) {
+    warning(
+      "No WNT target genes available for: ",
+      analysis_name
+    )
+    return(invisible(NULL))
+  }
+
+  # Dot plot
+  dot_plot <- DotPlot(
+    object,
+    features = genes,
+    group.by = group_variable,
+    dot.scale = 8
+  ) +
+    scale_color_gradient(
+      low = "#2166AC",
+      high = "#B2182B"
+    ) +
+    labs(
+      color = "Average Expression",
+      size = "Percent Expressed",
+      x = "Gene",
+      y = NULL,
+      title = analysis_name
+    ) +
+    theme_classic(base_size = 13) +
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1,
+        face = "italic"
+      ),
+      axis.text.y = element_text(face = "bold"),
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5
+      )
+    )
+
+  save_plot(
+    dot_plot,
+    file.path(
+      PROJECT_DIR,
+      "output/Final_Analysis/Figures",
+      paste0(analysis_name, "_DotPlot.png")
+    ),
+    12,
+    8
+  )
+
+
+  # Violin plot
+  violin_plot <- VlnPlot(
+    object,
+    features = genes,
+    group.by = group_variable,
+    pt.size = 0.05,
+    ncol = 1
+  ) &
+    theme_classic(base_size = 12) &
+    theme(
+      axis.text.x = element_text(face = "bold"),
+      legend.position = "right"
+    )
+
+  save_plot(
+    violin_plot,
+    file.path(
+      PROJECT_DIR,
+      "output/Final_Analysis/Figures",
+      paste0(analysis_name, "_ViolinPlot.png")
+    ),
+    12,
+    14
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+# 1. WNT targets: CSC vs Non-CSC
+# ---------------------------------------------------------------------------
+
+if ("CSC_All" %in% colnames(tumor@meta.data)) {
+
+  make_wnt_plots(
+    tumor,
+    wnt_present,
+    "CSC_All",
+    "WNT_Targets_CSC_vs_NonCSC"
+  )
+}
+
+
+# ---------------------------------------------------------------------------
+# 2. WNT targets: NR vs R in total refined tumor population
+# ---------------------------------------------------------------------------
+
+tumor$Response <- factor(
+  tumor$Response,
+  levels = c("NR", "R")
+)
+
+make_wnt_plots(
+  tumor,
+  wnt_present,
+  "Response",
+  "WNT_Targets_Total_Tumor_NR_vs_R"
+)
+
+
+# ---------------------------------------------------------------------------
+# 3. WNT targets: NR vs R within FZD7-positive tumor cells
+# ---------------------------------------------------------------------------
+
+if ("FZD7_Status" %in% colnames(tumor@meta.data)) {
+
+  FZD7_positive_tumor <- subset(
+    tumor,
+    subset = FZD7_Status == "FZD7+"
+  )
+
+  if (ncol(FZD7_positive_tumor) > 0) {
+
+    make_wnt_plots(
+      FZD7_positive_tumor,
+      wnt_present,
+      "Response",
+      "WNT_Targets_FZD7_Positive_NR_vs_R"
+    )
+  }
+}
+# ---------------------------------------------------------------------------
+# SOCS3 ANALYSIS
+# ---------------------------------------------------------------------------
+# SOCS3 expression was evaluated in:
+#
+#   1. Refined tumor population: NR vs R
+#   2. Major cell populations:
+#        Tumor/Epithelial
+#        Myeloid
+#        NK cells
+#        B cells
+#        Fibroblast
+#        T cells
+#   3. Patient-wise tumor analysis
+#
+# Expression values are normalized expression values from the RNA assay.
+# ---------------------------------------------------------------------------
+
+
+if ("SOCS3" %in% rownames(combined)) {
+
+
+  # -------------------------------------------------------------------------
+  # 1. SOCS3 IN REFINED TUMOR: NR vs R
+  # -------------------------------------------------------------------------
+
+  if ("Response" %in% colnames(tumor@meta.data)) {
+
+    tumor$Response <- factor(
+      tumor$Response,
+      levels = c("NR", "R")
+    )
+
+    # Violin plot
+    p <- VlnPlot(
+      tumor,
+      features = "SOCS3",
+      group.by = "Response",
+      pt.size = 0.05
+    ) +
+      theme_classic(base_size = 14) +
+      labs(
+        x = NULL,
+        y = "Normalized Expression",
+        title = "SOCS3 in Tumor: NR vs R"
+      )
+
+    save_plot(
+      p,
+      file.path(
+        PROJECT_DIR,
+        "output/Final_Analysis/Figures",
+        "SOCS3_Tumor_NR_vs_R_Violin.png"
+      ),
+      8,
+      7
+    )
+
+
+    # Dot plot
+    d <- DotPlot(
+      tumor,
+      features = "SOCS3",
+      group.by = "Response",
+      dot.scale = 8
+    ) +
+      scale_color_gradient(
+        low = "#2166AC",
+        high = "#B2182B"
+      ) +
+      theme_classic(base_size = 14) +
+      labs(
+        x = NULL,
+        y = NULL,
+        color = "Average Expression",
+        size = "Percent Expressed",
+        title = "SOCS3 in Tumor: NR vs R"
+      )
+
+    save_plot(
+      d,
+      file.path(
+        PROJECT_DIR,
+        "output/Final_Analysis/Figures",
+        "SOCS3_Tumor_NR_vs_R_DotPlot.png"
+      ),
+      7,
+      6
+    )
+  }
+
+
+  # -------------------------------------------------------------------------
+  # 2. SOCS3 ACROSS MAJOR CELL POPULATIONS
+  # -------------------------------------------------------------------------
+  
+  populations_for_socs3 <- c(
+    "Tumor/Epithelial",
+    "Myeloid",
+    "NK cells",
+    "B cells",
+    "Fibroblast",
+    "T cells"
+  )
+
+  pops <- subset(
+    combined,
+    subset = Cell_Population %in% populations_for_socs3
+  )
+
+  # Set population order for plotting
+  pops$Cell_Population <- factor(
+    pops$Cell_Population,
+    levels = populations_for_socs3
+  )
+
+
+  # Violin plot
+  p <- VlnPlot(
+    pops,
+    features = "SOCS3",
+    group.by = "Cell_Population",
+    pt.size = 0.03
+  ) +
+    theme_classic(base_size = 13) +
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1
+      )
+    ) +
+    labs(
+      x = NULL,
+      y = "Normalized Expression",
+      title = "SOCS3 Across Cell Populations"
+    )
+
+  save_plot(
+    p,
+    file.path(
+      PROJECT_DIR,
+      "output/Final_Analysis/Figures",
+      "SOCS3_All_Cell_Populations_Violin.png"
+    ),
+    12,
+    8
+  )
+
+
+  # Dot plot
+  d <- DotPlot(
+    pops,
+    features = "SOCS3",
+    group.by = "Cell_Population",
+    dot.scale = 8
+  ) +
+    scale_color_gradient(
+      low = "#2166AC",
+      high = "#B2182B"
+    ) +
+    theme_classic(base_size = 13) +
+    labs(
+      x = NULL,
+      y = NULL,
+      color = "Average Expression",
+      size = "Percent Expressed",
+      title = "SOCS3 Across Cell Populations"
+    )
+
+  save_plot(
+    d,
+    file.path(
+      PROJECT_DIR,
+      "output/Final_Analysis/Figures",
+      "SOCS3_All_Cell_Populations_DotPlot.png"
+    ),
+    10,
+    7
+  )
+
+
+  # -------------------------------------------------------------------------
+  # 3. PATIENT-WISE SOCS3 IN REFINED TUMOR
+  # -------------------------------------------------------------------------
+
+  if ("Sample_ID" %in% colnames(tumor@meta.data)) {
+
+    patient_socs3 <- FetchData(
+      tumor,
+      vars = c(
+        "SOCS3",
+        "Sample_ID",
+        "Response"
+      )
+    ) %>%
+      group_by(
+        Sample_ID,
+        Response
+      ) %>%
+      summarise(
+        N_Cells = n(),
+        Mean_SOCS3 = mean(SOCS3),
+        Median_SOCS3 = median(SOCS3),
+        Percent_GE1 = mean(SOCS3 >= 1) * 100,
+        Percent_GT0 = mean(SOCS3 > 0) * 100,
+        .groups = "drop"
+      )
+
+
+    # Save patient-wise SOCS3 table
+    write.csv(
+      patient_socs3,
+      file.path(
+        PROJECT_DIR,
+        "output/Final_Analysis/Tables",
+        "SOCS3_Tumor_Patient_Wise.csv"
+      ),
+      row.names = FALSE
+    )
+
+
+    # Patient-wise mean SOCS3 bar plot
+    p <- ggplot(
+      patient_socs3,
+      aes(
+        x = Sample_ID,
+        y = Mean_SOCS3,
+        fill = Response
+      )
+    ) +
+      geom_col() +
+      theme_classic(base_size = 13) +
+      theme(
+        axis.text.x = element_text(
+          angle = 45,
+          hjust = 1
+        )
+      ) +
+      labs(
+        x = "Patient",
+        y = "Mean SOCS3 Expression",
+        title = "Patient-wise SOCS3 Expression in Tumor"
+      )
+
+    save_plot(
+      p,
+      file.path(
+        PROJECT_DIR,
+        "output/Final_Analysis/Figures",
+        "SOCS3_Tumor_Patient_Wise_BarPlot.png"
+      ),
+      12,
+      7
+    )
+  }
+}
 
 # ---------------------------------------------------------------------------
 # NK-CELL ANALYSIS
